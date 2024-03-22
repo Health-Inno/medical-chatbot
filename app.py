@@ -1,10 +1,20 @@
 import os
 import copy
-from typing import Iterator
+from operator import itemgetter
 
 import gradio as gr
-from llama_cpp import Llama
 from huggingface_hub import hf_hub_download
+from langchain.chains import LLMChain
+from langchain.prompts.chat import (
+    ChatPromptTemplate,
+    HumanMessagePromptTemplate,
+    MessagesPlaceholder,
+)
+from langchain_core.messages import SystemMessage
+from langchain_community.llms import LlamaCpp
+from langchain.memory import ConversationBufferMemory
+from langchain_experimental.chat_models import Llama2Chat
+
 
 MAX_MAX_NEW_TOKENS = 2048
 DEFAULT_MAX_NEW_TOKENS = 1024
@@ -26,10 +36,33 @@ local_llm = hf_hub_download(
     local_dir=local_path
 )
 
-model = Llama(
-    model_path=local_llm,
-    chat_format="llama-2"
+llm = LlamaCpp(
+    model_path=local_llm
 )
+
+model = Llama2Chat(llm=llm)
+
+system_prompt = "You are a healthcare assistant chatbot that utilizes natural language processing to interact with user. The user has provided their Medical history which contains a summary of either past or current symptoms, medication and lifestyle factors."
+
+prompt_template = ChatPromptTemplate.from_messages(
+    [
+        SystemMessage(content=system_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        HumanMessagePromptTemplate.from_template("{human_input}")
+    ]
+)
+
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+chain = LLMChain(llm=model, prompt=prompt_template, memory=memory)
+
+# chain = (
+#     RunnablePassthrough.assign(
+#         chat_history=RunnableLambda(memory.load_memory_variables) | itemgetter("chat_history")
+#     )
+#     | prompt_template
+#     | llm
+# )
+
 
 def generate(
     message: str,
@@ -40,36 +73,51 @@ def generate(
     top_p: float = 0.9,
     top_k: int = 50,
     repetition_penalty: float = 1.2,
-) -> Iterator[str]:
-    conversation = []
-    if system_prompt:
-        conversation.append({"role": "system", "content": system_prompt})
-    for user, assistant in chat_history:
-        conversation.extend([{"role": "user", "content": user}, {"role": "assistant", "content": assistant}])
-    conversation.append({"role": "user", "content": message})
+):
+    
+    # conversation = []
+    # if system_prompt:
+    #     conversation.append({"role": "system", "content": system_prompt})
+    # for user, assistant in chat_history:
+    #     conversation.extend([{"role": "user", "content": user}, {"role": "assistant", "content": assistant}])
+    # conversation.append({"role": "user", "content": message})
 
     # print(conversation)
 
     generate_kwargs = dict(
-        messages=conversation,
         max_tokens=max_new_tokens,
-        stop=["</s>"],
-        stream=True,
         top_p=top_p,
         top_k=top_k,
         temperature=temperature,
         repeat_penalty=repetition_penalty,
     )
     
-    output = model.create_chat_completion(**generate_kwargs)
+    # output = model.create_chat_completion(**generate_kwargs)
     
-    temp = ""
-    for out in output:
-        print(out)
-        stream = copy.deepcopy(out)
-        temp += stream["choices"][0]["delta"]["content"] if "content" in stream["choices"][0]["delta"] else ""
-        yield temp
-    # return output["choices"][0]["message"]["content"]
+    # temp = ""
+    # for out in output:
+    #     print(out)
+    #     stream = copy.deepcopy(out)
+    #     temp += stream["choices"][0]["delta"]["content"] if "content" in stream["choices"][0]["delta"] else ""
+    #     yield temp
+
+
+    # for event in chain.astream_events(message, version="v1", **generate_kwargs):
+    #     yield event['data']['chunk'] if "chunk" in event['data'] else ""
+
+    # partial_message = ""
+    # for response in chain.stream({"human_input":message}):
+    #         # partial_message += response.content
+    #         print(response)
+    #         partial_message += response
+    #         yield  partial_message
+    response = chain.predict(human_input=message)
+    # partial_message = ""
+    # for chunk in chain.stream(message):
+    #       print(chunk)
+    #     #   partial_message += chunk.content
+    #       yield chunk
+    return response
 
 
 chat_interface = gr.ChatInterface(
